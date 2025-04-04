@@ -10,8 +10,12 @@ import traceback
 
 # Flask app setup
 app = Flask(__name__)
+
 # Use DATABASE_URL for Heroku PostgreSQL, default to local PostgreSQL for dev
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql+psycopg2://postgres:password123@localhost:5432/sentinel_inventory')
+database_url = os.getenv('DATABASE_URL', 'postgresql+psycopg2://postgres:password123@localhost:5432/sentinel_inventory')
+if database_url and database_url.startswith('postgres://'):
+    database_url = database_url.replace('postgres://', 'postgresql://', 1)
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6')  # Secure via env var
 app.config['JWT_HEADER_TYPE'] = 'Bearer'
@@ -123,7 +127,7 @@ def generate_barcode(item_code, size_code):
         barcode = f"{item_code}{size_numeric}{serial}"
     return barcode
 
-# Routes (unchanged from your original)
+# Routes
 @app.route('/login', methods=['POST'])
 def login():
     try:
@@ -458,8 +462,6 @@ def return_to_inmate():
     barcode = data['barcode']
     try:
         item = Item.query.filter_by(barcode=barcode).first()
- # Continue from the previous truncation
-
         if not item:
             return jsonify({'error': 'Item not found'}), 404
         if item.status != 'In Laundry':
@@ -775,21 +777,26 @@ def delete_user(user_id):
 
 # Database Initialization
 with app.app_context():
-    db.create_all()  # Create tables if they don't exist
-    # Ensure initial users exist
-    if not User.query.filter_by(username='admin').first():
-        admin = User(username='admin', role='Admin', first_name='Admin', last_name='User', email='admin@example.com')
-        admin.set_password('admin123')
-        db.session.add(admin)
-    if not User.query.filter_by(username='staff').first():
-        staff = User(username='staff', role='Staff', first_name='Staff', last_name='One', email='staff@example.com')
-        staff.set_password('staff123')
-        db.session.add(staff)
-    if not User.query.filter_by(username='trustee').first():
-        trustee = User(username='trustee', role='Trustee', first_name='Trustee', last_name='Two', email='trustee@example.com')
-        trustee.set_password('trustee123')
-        db.session.add(trustee)
-    db.session.commit()
+    try:
+        db.create_all()  # Create tables if they don't exist
+        # Ensure initial users exist
+        if not User.query.filter_by(username='admin').first():
+            admin = User(username='admin', role='Admin', first_name='Admin', last_name='User', email='admin@example.com')
+            admin.set_password('admin123')
+            db.session.add(admin)
+        if not User.query.filter_by(username='staff').first():
+            staff = User(username='staff', role='Staff', first_name='Staff', last_name='One', email='staff@example.com')
+            staff.set_password('staff123')
+            db.session.add(staff)
+        if not User.query.filter_by(username='trustee').first():
+            trustee = User(username='trustee', role='Trustee', first_name='Trustee', last_name='Two', email='trustee@example.com')
+            trustee.set_password('trustee123')
+            db.session.add(trustee)
+        db.session.commit()
+        print("Database initialized successfully with default users.")
+    except Exception as e:
+        print(f"Error initializing database: {str(e)}\n{traceback.format_exc()}")
+        db.session.rollback()
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
