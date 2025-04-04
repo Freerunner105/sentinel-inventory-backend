@@ -9,17 +9,17 @@ import random
 import traceback
 
 # Flask app setup
-basedir = os.path.abspath(os.path.dirname(__file__))
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///' + os.path.join(basedir, 'jail.db')).replace('postgres://', 'postgresql://')
+# Use DATABASE_URL for Heroku PostgreSQL, default to local PostgreSQL for dev
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql+psycopg2://postgres:password123@localhost:5432/sentinel_inventory')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['JWT_SECRET_KEY'] = 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6'  # Consider securing this in production
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6')  # Secure via env var
 app.config['JWT_HEADER_TYPE'] = 'Bearer'
 app.config['JWT_HEADER_NAME'] = 'Authorization'
 db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
 jwt = JWTManager(app)
-CORS(app, resources={r"/*": {"origins": "https://jail-inventory-frontend.herokuapp.com"}}, supports_credentials=True)  # Update with your actual frontend URL
+CORS(app, resources={r"/*": {"origins": ["https://sentinel-inventory-frontend-f89591a6b344.herokuapp.com", "http://localhost:3000"]}}, supports_credentials=True)
 
 # JWT error handlers
 @jwt.invalid_token_loader
@@ -123,7 +123,7 @@ def generate_barcode(item_code, size_code):
         barcode = f"{item_code}{size_numeric}{serial}"
     return barcode
 
-# Routes
+# Routes (unchanged from your original)
 @app.route('/login', methods=['POST'])
 def login():
     try:
@@ -458,6 +458,8 @@ def return_to_inmate():
     barcode = data['barcode']
     try:
         item = Item.query.filter_by(barcode=barcode).first()
+ # Continue from the previous truncation
+
         if not item:
             return jsonify({'error': 'Item not found'}), 404
         if item.status != 'In Laundry':
@@ -754,6 +756,22 @@ def get_action_logs():
     except Exception as e:
         print(f"Error in get_action_logs: {str(e)}\n{traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/settings/users/<int:user_id>', methods=['DELETE'])
+@jwt_required()
+def delete_user(user_id):
+    identity = get_jwt_identity()
+    claims = get_jwt()
+    role = claims.get('role')
+    if role != 'Admin':
+        return jsonify({'error': 'Permission denied'}), 403
+    user = User.query.get_or_404(user_id)
+    db.session.delete(user)
+    db.session.commit()
+    log = ActionLog(action='User Deleted', user_id=int(identity), details=f"User {user.username} deleted")
+    db.session.add(log)
+    db.session.commit()
+    return jsonify({'message': 'User deleted successfully'}), 200
 
 # Database Initialization
 with app.app_context():
