@@ -10,12 +10,8 @@ import traceback
 
 # Flask app setup
 app = Flask(__name__)
-
 # Use DATABASE_URL for Heroku PostgreSQL, default to local PostgreSQL for dev
-database_url = os.getenv('DATABASE_URL', 'postgresql+psycopg2://postgres:password123@localhost:5432/sentinel_inventory')
-if database_url and database_url.startswith('postgres://'):
-    database_url = database_url.replace('postgres://', 'postgresql://', 1)
-app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql+psycopg2://postgres:password123@localhost:5432/sentinel_inventory')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6')  # Secure via env var
 app.config['JWT_HEADER_TYPE'] = 'Bearer'
@@ -23,7 +19,7 @@ app.config['JWT_HEADER_NAME'] = 'Authorization'
 db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
 jwt = JWTManager(app)
-CORS(app, resources={r"/*": {"origins": ["https://sentinel-inventory-frontend-f89591a6b344.herokuapp.com", "http://localhost:3000"]}}, supports_credentials=True)
+CORS(app, resources={r"/*": {"origins": ["http://localhost:3000", "https://sentinel-inventory-frontend-f89591a6b344.herokuapp.com"]}}, supports_credentials=True)
 
 # JWT error handlers
 @jwt.invalid_token_loader
@@ -127,7 +123,16 @@ def generate_barcode(item_code, size_code):
         barcode = f"{item_code}{size_numeric}{serial}"
     return barcode
 
-# Routes
+# Routes (unchanged from your original)
+@app.route('/login', methods=['OPTIONS'])
+def login_options():
+    response = jsonify({'message': 'Preflight OK'})
+    response.headers.add('Access-Control-Allow-Origin', 'https://sentinel-inventory-frontend-f89591a6b344.herokuapp.com')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'POST')
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    return response, 200
+
 @app.route('/login', methods=['POST'])
 def login():
     try:
@@ -142,7 +147,7 @@ def login():
     except Exception as e:
         print(f"Login error: {str(e)}\n{traceback.format_exc()}")
         return jsonify({'error': f'Internal server error: {str(e)}'}), 500
-
+    
 @app.route('/inmates', methods=['GET'])
 @jwt_required()
 def get_inmates():
@@ -462,6 +467,8 @@ def return_to_inmate():
     barcode = data['barcode']
     try:
         item = Item.query.filter_by(barcode=barcode).first()
+ # Continue from the previous truncation
+
         if not item:
             return jsonify({'error': 'Item not found'}), 404
         if item.status != 'In Laundry':
@@ -778,7 +785,18 @@ def delete_user(user_id):
 # Database Initialization
 with app.app_context():
     try:
-        db.create_all()  # Create tables if they don't exist
+        # Drop all tables and sequences to ensure a clean slate
+        db.drop_all()
+        # Explicitly drop sequences if they exist
+        db.engine.execute("DROP SEQUENCE IF EXISTS user_id_seq CASCADE;")
+        db.engine.execute("DROP SEQUENCE IF EXISTS item_id_seq CASCADE;")
+        db.engine.execute("DROP SEQUENCE IF EXISTS inmate_item_id_seq CASCADE;")
+        db.engine.execute("DROP SEQUENCE IF EXISTS fee_id_seq CASCADE;")
+        db.engine.execute("DROP SEQUENCE IF EXISTS action_log_id_seq CASCADE;")
+        db.engine.execute("DROP SEQUENCE IF EXISTS recycled_barcodes_id_seq CASCADE;")
+        db.engine.execute("DROP SEQUENCE IF EXISTS item_code_id_seq CASCADE;")
+        # Create tables
+        db.create_all()
         # Ensure initial users exist
         if not User.query.filter_by(username='admin').first():
             admin = User(username='admin', role='Admin', first_name='Admin', last_name='User', email='admin@example.com')
