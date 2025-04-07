@@ -11,7 +11,11 @@ import traceback
 # Flask app setup
 app = Flask(__name__)
 # Use DATABASE_URL for Heroku PostgreSQL, default to local PostgreSQL for dev
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql+psycopg2://postgres:password123@localhost:5432/sentinel_inventory')
+# Get the database URL from Heroku, or use a local default
+database_url = os.getenv('DATABASE_URL', 'postgresql+psycopg2://postgres:password123@localhost:5432/sentinel_inventory')
+# Heroku uses postgres://, but SQLAlchemy needs postgresql://, so fix it
+if database_url.startswith('postgres://'):
+    database_url = database_url.replace('postgres://', 'postgresql://', 1)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6')  # Secure via env var
 app.config['JWT_HEADER_TYPE'] = 'Bearer'
