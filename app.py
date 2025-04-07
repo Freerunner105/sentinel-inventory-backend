@@ -790,11 +790,9 @@ def delete_user(user_id):
 # Database Initialization
 with app.app_context():
     try:
-        # Drop all tables to ensure a clean slate
-        db.drop_all()
-        # Create tables
+        # Create tables if they don't exist (won't drop existing data)
         db.create_all()
-        # Ensure initial users exist
+        # Ensure initial users exist (only add if they don't already exist)
         if not User.query.filter_by(username='admin').first():
             admin = User(username='admin', role='Admin', first_name='Admin', last_name='User', email='admin@example.com')
             admin.set_password('admin123')
