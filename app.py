@@ -790,16 +790,8 @@ def delete_user(user_id):
 # Database Initialization
 with app.app_context():
     try:
-        # Drop all tables and sequences to ensure a clean slate
+        # Drop all tables to ensure a clean slate
         db.drop_all()
-        # Explicitly drop sequences if they exist
-        db.engine.execute("DROP SEQUENCE IF EXISTS user_id_seq CASCADE;")
-        db.engine.execute("DROP SEQUENCE IF EXISTS item_id_seq CASCADE;")
-        db.engine.execute("DROP SEQUENCE IF EXISTS inmate_item_id_seq CASCADE;")
-        db.engine.execute("DROP SEQUENCE IF EXISTS fee_id_seq CASCADE;")
-        db.engine.execute("DROP SEQUENCE IF EXISTS action_log_id_seq CASCADE;")
-        db.engine.execute("DROP SEQUENCE IF EXISTS recycled_barcodes_id_seq CASCADE;")
-        db.engine.execute("DROP SEQUENCE IF EXISTS item_code_id_seq CASCADE;")
         # Create tables
         db.create_all()
         # Ensure initial users exist
