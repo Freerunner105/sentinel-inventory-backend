@@ -219,6 +219,22 @@ def get_inmate_items(id):
     except Exception as e:
         print(f"Error in get_inmate_items: {str(e)}\n{traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
+    
+@app.route('/inmates/<id>', methods=['GET'])
+@jwt_required()
+def get_inmate(id):
+    try:
+        inmate = Inmate.query.get_or_404(id)
+        return jsonify({
+            'id': str(inmate.id),
+            'name': inmate.name or '',
+            'housing_unit': inmate.housing_unit or 'Unknown',
+            'fees_paid': float(inmate.fees_paid) if inmate.fees_paid is not None else 0.0,
+            'notes': inmate.notes or ''
+        })
+    except Exception as e:
+        print(f"Error in get_inmate: {str(e)}\n{traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/inmates/<id>/items', methods=['POST'])
 @jwt_required()
