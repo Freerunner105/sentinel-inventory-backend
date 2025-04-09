@@ -543,7 +543,7 @@ def return_to_inventory():
 
 @app.route('/release/<id>', methods=['POST'])
 @jwt_required()
-def release_inmate():
+def release_inmate(id):
     identity = get_jwt_identity()
     claims = get_jwt()
     role = claims.get('role')
