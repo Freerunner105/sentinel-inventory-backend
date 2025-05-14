@@ -7,7 +7,7 @@ from flask_migrate import Migrate # Import Migrate
 import os
 from datetime import datetime
 import random
-import traceback
+import traceback # Ensure traceback is imported
 import csv
 from io import StringIO
 import re # For item code validation
@@ -138,16 +138,6 @@ def generate_barcode(item_code, size_code):
         serial = str(random.randint(1, 999999)).zfill(6)
         barcode = f"{item_code}{size_numeric}{serial}"
     return barcode
-
-# Removed explicit OPTIONS handler for /login; global CORS should handle it.
-# @app.route("/login", methods=["OPTIONS"])
-# def login_options():
-#     response = jsonify({"message": "Preflight OK"})
-#     response.headers.add("Access-Control-Allow-Origin", "https://sentinel-inventory-frontend-f89591a6b344.herokuapp.com")
-#     response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
-#     response.headers.add("Access-Control-Allow-Methods", "POST")
-#     response.headers.add("Access-Control-Allow-Credentials", "true")
-#     return response, 200
 
 @app.route("/login", methods=["POST"])
 def login():
@@ -403,13 +393,8 @@ def add_item():
     item_code_val = data["item_code"]
     size_code_val = data["size_code"]
 
-    # Validate item_code and size_code format (e.g., 2 alphanumeric chars)
     if not re.match(r"^[a-zA-Z0-9]{2}$", item_code_val):
         return jsonify({"error": "Item code must be 2 alphanumeric characters."}), 400
-    # Size code validation can be more specific if there's a predefined list of valid sizes
-    # For now, let's assume it's also 2 chars, but it could be more flexible based on generate_barcode logic
-    # if not re.match(r"^[a-zA-Z0-9]{2,4}$", size_code_val): # Example, adjust as needed
-    #     return jsonify({"error": "Size code format is invalid."}), 400
 
     barcode = generate_barcode(item_code_val, size_code_val)
     
@@ -455,7 +440,6 @@ def update_item(id):
     try:
         db.session.commit()
         log_details = f"Item {item.name} (ID: {item.id}) updated. "
-        # Add more details to log if needed
         log = ActionLog(action="Item Updated", user_id=int(identity), details=log_details.strip())
         db.session.add(log)
         db.session.commit()
@@ -475,11 +459,6 @@ def delete_item(id):
         return jsonify({"error": "Permission denied"}), 403
     item = Item.query.get_or_404(id)
     try:
-        # Instead of deleting, mark as "Removed" or similar to maintain history
-        # For now, actual deletion as per typical REST:
-        # db.session.delete(item)
-        # db.session.commit()
-        # For this app, let's change status to 'Removed'
         item.status = "Removed"
         recycled_barcode = RecycledBarcodes(barcode=item.barcode)
         db.session.add(recycled_barcode)
@@ -520,7 +499,7 @@ def assign_item_to_inmate():
         inmate_item = InmateItem(
             inmate_id=inmate.id,
             item_id=item.id,
-            condition=item.condition # Assign current item condition
+            condition=item.condition
         )
         item.status = "Assigned"
         db.session.add(inmate_item)
@@ -558,15 +537,13 @@ def return_item_from_inmate():
 
     try:
         inmate_item.return_status = "Returned"
-        inmate_item.condition = data["condition"] # Update with returned condition
-        item.status = "In Stock" # Or "Needs Repair", "Discarded" based on condition
-        item.condition = data["condition"] # Update item's main condition as well
+        inmate_item.condition = data["condition"]
+        item.status = "In Stock"
+        item.condition = data["condition"]
         
-        # Logic for fees if item is damaged or not returned in good condition
-        # This is a placeholder - actual fee logic might be more complex
-        if data["condition"] == "Damaged" or data["condition"] == "Lost": # Assuming 'Lost' is a possible return condition
+        if data["condition"] == "Damaged" or data["condition"] == "Lost":
             fee_name = f"Damaged/Lost Item - {item.name}"
-            fee_amount = item.cost # Example: charge full cost
+            fee_amount = item.cost
             new_fee = Fee(
                 name=fee_name,
                 amount=fee_amount,
@@ -786,28 +763,26 @@ def delete_user(id):
         return jsonify({"error": str(e)}), 500
 
 @app.route("/inmates/<string:inmate_id>/items", methods=["OPTIONS"])
-@jwt_required() # Keep JWT for consistency, though OPTIONS might not always need it depending on server/CORS library behavior
+@jwt_required()
 def get_inmate_assigned_items_options(inmate_id):
-    # Preflight requests don't need a body, just the right headers
     response = jsonify({"message": "Preflight OK for inmate items"})
-    # Ensure these headers are consistent with your global CORS config or specific needs
-    # The global CORS(app, ...) should handle most of this, but explicit can help for debugging
-    # response.headers.add("Access-Control-Allow-Origin", "https://sentinel-inventory-frontend-f89591a6b344.herokuapp.com") # Handled by global CORS
-    # response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization") # Handled by global CORS
-    # response.headers.add("Access-Control-Allow-Methods", "GET, OPTIONS") # Handled by global CORS
-    # response.headers.add("Access-Control-Allow-Credentials", "true") # Handled by global CORS
     return response, 200
 
 @app.route("/inmates/<string:inmate_id>/items", methods=["GET"])
 @jwt_required()
 def get_inmate_assigned_items(inmate_id):
+    print(f"Fetching items for inmate_id: {inmate_id}") # Added for debugging
     try:
         inmate = Inmate.query.get_or_404(inmate_id)
+        print(f"Found inmate: {inmate.name if inmate else 'Not Found'}") # Added for debugging
         assigned_items = InmateItem.query.filter_by(inmate_id=inmate.id, return_status=None).all()
+        print(f"Found {len(assigned_items)} assigned items records for inmate {inmate_id}") # Added for debugging
         result = []
-        for ai in assigned_items:
+        for i, ai in enumerate(assigned_items):
+            print(f"Processing assigned item record {i+1}/{len(assigned_items)}, item_id: {ai.item_id}") # Added for debugging
             item = Item.query.get(ai.item_id)
             if item:
+                print(f"Found item details for item_id {ai.item_id}: {item.name}") # Added for debugging
                 result.append({
                     "id": item.id,
                     "name": item.name,
@@ -820,10 +795,15 @@ def get_inmate_assigned_items(inmate_id):
                     "item_group": item.item_group,
                     "assigned_date": ai.assigned_date.isoformat() if ai.assigned_date else None
                 })
+            else:
+                print(f"WARNING: Item with ID {ai.item_id} not found for inmate {inmate_id}, but InmateItem record exists.") # Added for debugging
+        print(f"Successfully processed items for inmate {inmate_id}. Returning {len(result)} items.") # Added for debugging
         return jsonify(result)
     except Exception as e:
-        print(f"Error in get_inmate_assigned_items for inmate {inmate_id}: {str(e)}\n{traceback.format_exc()}")
-        return jsonify({"error": str(e)}), 500
+        # Enhanced logging for the specific 500 error
+        error_details = f"Error in get_inmate_assigned_items for inmate {inmate_id}: {str(e)}\nFULL TRACEBACK:\n{traceback.format_exc()}"
+        print(error_details)
+        return jsonify({"error": "An internal server error occurred while fetching inmate items.", "details": str(e)}), 500
 
 @app.route("/inmates/<string:inmate_id>/fees", methods=["OPTIONS"])
 @jwt_required()
