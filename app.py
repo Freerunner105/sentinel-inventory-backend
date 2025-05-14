@@ -854,3 +854,37 @@ if __name__ == "__main__":
         db.create_all() # Creates tables if they don't exist
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5001)))
 
+
+
+@app.route("/inmates/<string:inmate_id>/fees", methods=["OPTIONS"])
+@jwt_required()
+def get_inmate_fees_options(inmate_id):
+    response = jsonify({"message": "Preflight OK for inmate fees"})
+    return response, 200
+
+@app.route("/inmates/<string:inmate_id>/fees", methods=["GET"])
+@jwt_required()
+def get_inmate_fees(inmate_id):
+    try:
+        inmate = Inmate.query.get_or_404(inmate_id)
+        fees = Fee.query.filter_by(inmate_id=inmate.id).all()
+        result = []
+        for fee in fees:
+            result.append({
+                "id": fee.id,
+                "name": fee.name,
+                "amount": fee.amount,
+                "item_barcodes": fee.item_barcodes,
+                "date_applied": fee.date_applied.isoformat() if fee.date_applied else None,
+                "notes": fee.notes
+            })
+        return jsonify(result)
+    except Exception as e:
+        print(f"Error in get_inmate_fees for inmate {inmate_id}: {str(e)}\n{traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    with app.app_context():
+        db.create_all() # Creates tables if they don\'t exist
+    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5001)))
+
