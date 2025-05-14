@@ -14,8 +14,8 @@ import re
 import click
 from werkzeug.exceptions import NotFound # Import NotFound
 
-# --- Sentinel Backend App Starting - Version: 20250514-2127 ---
-print("--- Sentinel Backend App Starting - Version: 20250514-2127 ---")
+# --- Sentinel Backend App Starting - Version: 20250514-2137 ---
+print("--- Sentinel Backend App Starting - Version: 20250514-2137 ---")
 
 app = Flask(__name__)
 
@@ -36,7 +36,7 @@ CORS(app, resources={r"/*": {"origins": ["http://localhost:3000", "https://senti
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    return jsonify({"status": "healthy", "version": "20250514-2127"}), 200
+    return jsonify({"status": "healthy", "version": "20250514-2137"}), 200
 
 @jwt.invalid_token_loader
 def invalid_token_callback(error):
@@ -282,6 +282,63 @@ def import_inmates_csv():
     else:
         return jsonify({"error": "Invalid file type. Please upload a CSV file."}), 400
 
+# New GET endpoint for a single inmate
+@app.route("/inmates/<string:id>", methods=["GET"])
+@jwt_required()
+def get_inmate_by_id(id):
+    try:
+        inmate = Inmate.query.get(id)
+        if not inmate:
+            return jsonify({"error": f"Inmate with ID {id} not found"}), 404
+        
+        total_fees_applied = db.session.query(db.func.sum(Fee.amount)).filter(Fee.inmate_id == inmate.id).scalar() or 0.0
+        fees_owed = total_fees_applied
+        
+        # Fetch assigned items
+        assigned_items_records = InmateItem.query.filter_by(inmate_id=inmate.id, return_status=None).all()
+        assigned_items_details = []
+        for ai in assigned_items_records:
+            item = Item.query.get(ai.item_id)
+            if item:
+                assigned_items_details.append({
+                    "id": item.id,
+                    "name": item.name,
+                    "barcode": item.barcode,
+                    "vendor": item.vendor,
+                    "cost": item.cost,
+                    "status": item.status,
+                    "condition": item.condition,
+                    "notes": item.notes,
+                    "item_group": item.item_group,
+                    "assigned_date": ai.assigned_date.isoformat() if ai.assigned_date else None
+                })
+
+        # Fetch fees
+        fees_records = Fee.query.filter_by(inmate_id=inmate.id).all()
+        fees_details = []
+        for fee in fees_records:
+            fees_details.append({
+                "id": fee.id,
+                "name": fee.name,
+                "amount": fee.amount,
+                "item_barcodes": fee.item_barcodes,
+                "date_applied": fee.date_applied.isoformat() if fee.date_applied else None,
+                "notes": fee.notes
+            })
+
+        return jsonify({
+            "id": str(inmate.id),
+            "name": inmate.name or "",
+            "housing_unit": inmate.housing_unit or "Unknown",
+            "fees_owed": float(fees_owed),
+            "notes": inmate.notes or "",
+            "assigned_items": assigned_items_details,
+            "fees": fees_details
+        })
+    except Exception as e:
+        print(f"Error in get_inmate_by_id for inmate {id}: {str(e)}\n{traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/inmates/<string:id>", methods=["PUT"])
 @jwt_required()
 def update_inmate(id):
@@ -293,7 +350,7 @@ def update_inmate(id):
     data = request.get_json()
     if not data:
         return jsonify({"error": "No data provided"}), 400
-    inmate = Inmate.query.get_or_404(id)
+    inmate = Inmate.query.get_or_404(id) # Keep get_or_404 here for PUT as it implies existence
     if "housing_unit" in data:
         inmate.housing_unit = data["housing_unit"]
     if "notes" in data:
@@ -730,22 +787,22 @@ def get_inmate_assigned_items_options(inmate_id):
 @app.route("/inmates/<string:inmate_id>/items", methods=["GET"])
 @jwt_required()
 def get_inmate_assigned_items(inmate_id):
-    print(f"--- DEBUG v20250514-2127: Fetching items for inmate_id: {inmate_id} ---")
+    print(f"--- DEBUG v20250514-2137: Fetching items for inmate_id: {inmate_id} ---")
     try:
-        inmate = Inmate.query.get(inmate_id) # Changed from get_or_404
+        inmate = Inmate.query.get(inmate_id)
         if not inmate:
-            print(f"--- DEBUG v20250514-2127: Inmate with ID {inmate_id} not found. Returning 404. ---")
+            print(f"--- DEBUG v20250514-2137: Inmate with ID {inmate_id} not found. Returning 404. ---")
             return jsonify({"error": f"Inmate with ID {inmate_id} not found"}), 404
         
-        print(f"--- DEBUG v20250514-2127: Found inmate: {inmate.name} ---")
+        print(f"--- DEBUG v20250514-2137: Found inmate: {inmate.name} ---")
         assigned_items = InmateItem.query.filter_by(inmate_id=inmate.id, return_status=None).all()
-        print(f"--- DEBUG v20250514-2127: Found {len(assigned_items)} assigned items records for inmate {inmate_id} ---")
+        print(f"--- DEBUG v20250514-2137: Found {len(assigned_items)} assigned items records for inmate {inmate_id} ---")
         result = []
         for i, ai in enumerate(assigned_items):
-            print(f"--- DEBUG v20250514-2127: Processing assigned item record {i+1}/{len(assigned_items)}, item_id: {ai.item_id} ---")
+            print(f"--- DEBUG v20250514-2137: Processing assigned item record {i+1}/{len(assigned_items)}, item_id: {ai.item_id} ---")
             item = Item.query.get(ai.item_id)
             if item:
-                print(f"--- DEBUG v20250514-2127: Found item details for item_id {ai.item_id}: {item.name} ---")
+                print(f"--- DEBUG v20250514-2137: Found item details for item_id {ai.item_id}: {item.name} ---")
                 result.append({
                     "id": item.id,
                     "name": item.name,
@@ -759,15 +816,15 @@ def get_inmate_assigned_items(inmate_id):
                     "assigned_date": ai.assigned_date.isoformat() if ai.assigned_date else None
                 })
             else:
-                print(f"--- DEBUG WARNING v20250514-2127: Item with ID {ai.item_id} not found for inmate {inmate_id}, but InmateItem record exists. ---")
-        print(f"--- DEBUG v20250514-2127: Successfully processed items for inmate {inmate_id}. Returning {len(result)} items. ---")
+                print(f"--- DEBUG WARNING v20250514-2137: Item with ID {ai.item_id} not found for inmate {inmate_id}, but InmateItem record exists. ---")
+        print(f"--- DEBUG v20250514-2137: Successfully processed items for inmate {inmate_id}. Returning {len(result)} items. ---")
         return jsonify(result)
-    except NotFound as nfe: # Specifically catch NotFound if it still somehow occurs from other places
-        error_details = f"--- ERROR v20250514-2127: NotFound error in get_inmate_assigned_items for inmate {inmate_id}: {str(nfe)}\nFULL TRACEBACK:\n{traceback.format_exc()} ---"
+    except NotFound as nfe:
+        error_details = f"--- ERROR v20250514-2137: NotFound error in get_inmate_assigned_items for inmate {inmate_id}: {str(nfe)}\nFULL TRACEBACK:\n{traceback.format_exc()} ---"
         print(error_details)
         return jsonify({"error": f"Resource not found for inmate {inmate_id}. Details: {str(nfe)}"}), 404
     except Exception as e:
-        error_details = f"--- ERROR v20250514-2127: Error in get_inmate_assigned_items for inmate {inmate_id}: {str(e)}\nFULL TRACEBACK:\n{traceback.format_exc()} ---"
+        error_details = f"--- ERROR v20250514-2137: Error in get_inmate_assigned_items for inmate {inmate_id}: {str(e)}\nFULL TRACEBACK:\n{traceback.format_exc()} ---"
         print(error_details)
         return jsonify({"error": "An internal server error occurred while fetching inmate items.", "details": str(e)}), 500
 
@@ -781,7 +838,7 @@ def get_inmate_fees_options(inmate_id):
 @jwt_required()
 def get_inmate_fees(inmate_id):
     try:
-        inmate = Inmate.query.get(inmate_id) # Changed from get_or_404
+        inmate = Inmate.query.get(inmate_id)
         if not inmate:
             return jsonify({"error": f"Inmate with ID {inmate_id} not found"}), 404
         fees = Fee.query.filter_by(inmate_id=inmate.id).all()
