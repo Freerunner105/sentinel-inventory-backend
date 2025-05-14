@@ -11,6 +11,7 @@ import traceback
 import csv
 from io import StringIO
 import re # For item code validation
+import click # Added for custom CLI command
 
 # Flask app setup
 app = Flask(__name__)
@@ -114,6 +115,12 @@ class ItemCode(db.Model):
     name = db.Column(db.String(100), nullable=False)
     type = db.Column(db.String(50), nullable=False)
     code = db.Column(db.String(2), unique=True, nullable=False)
+
+# Custom CLI command for diagnostics
+@app.cli.command("test-cli")
+def test_cli_command():
+    """A simple test command for CLI diagnostics."""
+    print("Custom CLI command \'test-cli\' executed successfully!")
 
 def generate_barcode(item_code, size_code):
     size_map = {
@@ -235,7 +242,6 @@ def import_inmates_csv():
             csv_reader = csv.DictReader(csv_file)
             expected_headers = ['last name', 'first name', 'housing unit', 'notes', 'ID']
             
-            # Normalize reader fieldnames for comparison
             reader_fieldnames_normalized = [h.lower().strip() for h in csv_reader.fieldnames] if csv_reader.fieldnames else []
 
             if not all(header.lower() in reader_fieldnames_normalized for header in expected_headers):
@@ -245,8 +251,7 @@ def import_inmates_csv():
             inmates_skipped = 0
             errors = []
 
-            for row_num, row_data in enumerate(csv_reader, start=2): # Start at 2 because header is row 1
-                # Normalize keys from the row for consistent access
+            for row_num, row_data in enumerate(csv_reader, start=2):
                 row = {k.lower().strip(): v for k, v in row_data.items()}
                 try:
                     inmate_id = row.get('id', '').strip()
@@ -375,131 +380,52 @@ def get_inventory():
         print(f"Error in get_inventory: {str(e)}\n{traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
-@app.route("/inventory/codes", methods=["GET"])
+@app.route("/inventory", methods=["POST"])
 @jwt_required()
-def get_item_codes():
-    try:
-        codes = ItemCode.query.all()
-        return jsonify([{"id": code.id, "name": code.name, "type": code.type, "code": code.code} for code in codes])
-    except Exception as e:
-        print(f"Error in get_item_codes: {str(e)}\n{traceback.format_exc()}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/inventory/codes", methods=["POST"])
-@jwt_required()
-def create_item_code():
+def add_item():
     identity = get_jwt_identity()
     claims = get_jwt()
     role = claims.get("role")
     if role not in ["Admin", "Staff"]:
         return jsonify({"error": "Permission denied"}), 403
     data = request.get_json()
-    if not data or "name" not in data or "type" not in data or "code" not in data:
-        return jsonify({"error": "Name, type, and code are required"}), 400
-    if not re.match(r"^[A-Za-z0-9]{2}$", data["code"]):
-         return jsonify({"error": "Item code must be exactly 2 alphanumeric characters."}), 400
-    if ItemCode.query.filter_by(code=data["code"].upper()).first():
-        return jsonify({"error": "Item code already exists"}), 400
+    if not data or "name" not in data or "cost" not in data or "item_code" not in data or "size_code" not in data:
+        return jsonify({"error": "Name, cost, item_code, and size_code are required"}), 400
+    
+    item_code_str = data["item_code"].strip()
+    size_code_str = data["size_code"].strip()
+
+    # Validate item_code and size_code format (e.g., 2 alphanumeric for item_code)
+    if not re.match(r"^[a-zA-Z0-9]{2}$", item_code_str):
+        return jsonify({"error": "Item code must be 2 alphanumeric characters."}), 400
+
+    barcode = generate_barcode(item_code_str, size_code_str)
+    
     try:
-        item_code = ItemCode(name=data["name"], type=data["type"], code=data["code"].upper())
-        db.session.add(item_code)
+        item = Item(
+            name=data["name"],
+            barcode=barcode,
+            vendor=data.get("vendor", ""),
+            cost=data["cost"],
+            status=data.get("status", "In Stock"),
+            condition=data.get("condition", "New"),
+            notes=data.get("notes", ""),
+            item_group=data.get("item_group", "Misc.")
+        )
+        db.session.add(item)
         db.session.commit()
-        log = ActionLog(action="Item Code Created", user_id=int(identity), details=f"Item code {item_code.code} created")
+        log = ActionLog(action="Item Added", user_id=int(identity), details=f"Item {item.name} ({item.barcode}) added")
         db.session.add(log)
         db.session.commit()
-        return jsonify({"message": "Item code created successfully"}), 201
+        return jsonify({"message": "Item added successfully", "barcode": barcode}), 201
     except Exception as e:
         db.session.rollback()
-        print(f"Error in create_item_code: {str(e)}\n{traceback.format_exc()}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/inventory/bulk", methods=["POST"])
-@jwt_required()
-def receive_bulk_items():
-    identity = get_jwt_identity()
-    claims = get_jwt()
-    role = claims.get("role")
-    if role not in ["Admin", "Staff"]:
-        return jsonify({"error": "Permission denied"}), 403
-    data = request.get_json()
-    required_fields = ["item_code", "size_code", "quantity", "name", "cost"]
-    if not all(field in data for field in required_fields):
-        return jsonify({"error": "Missing required fields for bulk item creation"}), 400
-    try:
-        quantity = int(data["quantity"])
-        cost = float(data["cost"])
-        if quantity <= 0 or cost <= 0:
-            return jsonify({"error": "Quantity and cost must be positive values"}), 400
-        
-        item_code_obj = ItemCode.query.filter_by(code=data["item_code"]).first()
-        if not item_code_obj:
-            return jsonify({"error": f"Item code {data['item_code']} not found."}), 404
-
-        items_created = []
-        for _ in range(quantity):
-            barcode = generate_barcode(data["item_code"], data["size_code"])
-            new_item = Item(
-                name=data["name"],
-                barcode=barcode,
-                vendor=data.get("vendor", ""),
-                cost=cost,
-                status="In Stock",
-                condition="New",
-                notes=data.get("notes", ""),
-                item_group=data.get("item_group", "Misc.") # Use provided item_group or default
-            )
-            db.session.add(new_item)
-            items_created.append(new_item.barcode)
-        
-        db.session.commit()
-        log = ActionLog(action="Bulk Items Received", user_id=int(identity), details=f"{quantity} items of {data['name']} received. Barcodes: {', '.join(items_created)}")
-        db.session.add(log)
-        db.session.commit()
-        return jsonify({"message": f"{quantity} items received successfully", "barcodes": items_created}), 201
-    except Exception as e:
-        db.session.rollback()
-        print(f"Error in receive_bulk_items: {str(e)}\n{traceback.format_exc()}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/inventory/remove", methods=["POST"])
-@jwt_required()
-def remove_item():
-    identity = get_jwt_identity()
-    claims = get_jwt()
-    role = claims.get("role")
-    if role not in ["Admin", "Staff"]:
-        return jsonify({"error": "Permission denied"}), 403
-    data = request.get_json()
-    if "barcode" not in data or "condition" not in data:
-        return jsonify({"error": "Barcode and condition are required"}), 400
-    item = Item.query.filter_by(barcode=data["barcode"]).first()
-    if not item:
-        return jsonify({"error": "Item not found"}), 404
-    if item.status == "Removed":
-        return jsonify({"error": "Item already marked as removed"}), 400
-    try:
-        item.status = "Removed"
-        item.condition = data["condition"]
-        if "notes" in data:
-            item.notes = data["notes"]
-        
-        # Add barcode to recycled barcodes table
-        recycled_barcode = RecycledBarcodes(barcode=item.barcode)
-        db.session.add(recycled_barcode)
-        
-        db.session.commit()
-        log = ActionLog(action="Item Removed", user_id=int(identity), details=f"Item {item.barcode} removed. Condition: {item.condition}")
-        db.session.add(log)
-        db.session.commit()
-        return jsonify({"message": "Item removed successfully"})
-    except Exception as e:
-        db.session.rollback()
-        print(f"Error in remove_item: {str(e)}\n{traceback.format_exc()}")
+        print(f"Error in add_item: {str(e)}\n{traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/inventory/<string:barcode>", methods=["PUT"])
 @jwt_required()
-def update_inventory_item(barcode):
+def update_item(barcode):
     identity = get_jwt_identity()
     claims = get_jwt()
     role = claims.get("role")
@@ -510,42 +436,130 @@ def update_inventory_item(barcode):
         return jsonify({"error": "No data provided"}), 400
     item = Item.query.filter_by(barcode=barcode).first_or_404()
     
-    updated_fields = []
-    if "name" in data and data["name"] != item.name:
-        item.name = data["name"]
-        updated_fields.append(f"Name to '{data['name']}'")
-    if "vendor" in data and data["vendor"] != item.vendor:
-        item.vendor = data["vendor"]
-        updated_fields.append(f"Vendor to '{data['vendor']}'")
-    if "cost" in data and float(data["cost"]) != item.cost:
-        item.cost = float(data["cost"])
-        updated_fields.append(f"Cost to {data['cost']}")
-    if "condition" in data and data["condition"] != item.condition:
-        item.condition = data["condition"]
-        updated_fields.append(f"Condition to '{data['condition']}'")
-    if "notes" in data and data["notes"] != item.notes:
-        item.notes = data["notes"]
-        updated_fields.append(f"Notes to '{data['notes']}'")
-    if "item_group" in data and data["item_group"] != item.item_group:
-        item.item_group = data["item_group"]
-        updated_fields.append(f"Item Group to '{data['item_group']}'")
+    log_details_parts = [f"Item {item.name} ({item.barcode}) updated."]
 
-    if not updated_fields:
-        return jsonify({"message": "No changes detected for item"}), 200
+    if "name" in data:
+        item.name = data["name"]
+        log_details_parts.append(f"Name: {data['name']}.")
+    if "vendor" in data:
+        item.vendor = data["vendor"]
+        log_details_parts.append(f"Vendor: {data['vendor']}.")
+    if "cost" in data:
+        item.cost = data["cost"]
+        log_details_parts.append(f"Cost: {data['cost']}.")
+    if "status" in data:
+        item.status = data["status"]
+        log_details_parts.append(f"Status: {data['status']}.")
+    if "condition" in data:
+        item.condition = data["condition"]
+        log_details_parts.append(f"Condition: {data['condition']}.")
+    if "notes" in data:
+        item.notes = data["notes"]
+        log_details_parts.append(f"Notes: {data['notes']}.")
+    if "item_group" in data:
+        item.item_group = data["item_group"]
+        log_details_parts.append(f"Item Group: {data['item_group']}.")
 
     try:
         db.session.commit()
-        log_details = f"Item {barcode} updated: {', '.join(updated_fields)}."
-        log = ActionLog(action="Item Updated", user_id=int(identity), details=log_details)
+        log = ActionLog(action="Item Updated", user_id=int(identity), details=" ".join(log_details_parts))
         db.session.add(log)
         db.session.commit()
         return jsonify({"message": "Item updated successfully"})
     except Exception as e:
         db.session.rollback()
-        print(f"Error in update_inventory_item: {str(e)}\n{traceback.format_exc()}")
+        print(f"Error in update_item: {str(e)}\n{traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
-@app.route("/assign", methods=["POST"])
+@app.route("/inventory/<string:barcode>", methods=["DELETE"])
+@jwt_required()
+def delete_item(barcode):
+    identity = get_jwt_identity()
+    claims = get_jwt()
+    role = claims.get("role")
+    if role != "Admin":
+        return jsonify({"error": "Permission denied. Admin role required."}), 403
+    item = Item.query.filter_by(barcode=barcode).first_or_404()
+    try:
+        # Instead of deleting, mark as 'Removed'
+        item.status = "Removed"
+        # Add barcode to recycled list if not already there
+        if not RecycledBarcodes.query.filter_by(barcode=item.barcode).first():
+            recycled = RecycledBarcodes(barcode=item.barcode)
+            db.session.add(recycled)
+        db.session.commit()
+        log = ActionLog(action="Item Marked as Removed", user_id=int(identity), details=f"Item {item.name} ({item.barcode}) marked as Removed")
+        db.session.add(log)
+        db.session.commit()
+        return jsonify({"message": "Item marked as Removed successfully"})
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error in delete_item: {str(e)}\n{traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/item_codes", methods=["GET"])
+@jwt_required()
+def get_item_codes():
+    try:
+        item_codes = ItemCode.query.all()
+        return jsonify([{"id": ic.id, "name": ic.name, "type": ic.type, "code": ic.code} for ic in item_codes])
+    except Exception as e:
+        print(f"Error in get_item_codes: {str(e)}\n{traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/item_codes", methods=["POST"])
+@jwt_required()
+def add_item_code():
+    identity = get_jwt_identity()
+    claims = get_jwt()
+    role = claims.get("role")
+    if role != "Admin":
+        return jsonify({"error": "Permission denied. Admin role required."}), 403
+    data = request.get_json()
+    if not data or "name" not in data or "type" not in data or "code" not in data:
+        return jsonify({"error": "Name, type, and code are required for item code"}), 400
+    
+    code_str = data["code"].strip()
+    if not re.match(r"^[a-zA-Z0-9]{2}$", code_str):
+        return jsonify({"error": "Item code must be 2 alphanumeric characters."}), 400
+    if ItemCode.query.filter_by(code=code_str).first():
+        return jsonify({"error": "This 2-character code already exists."}), 400
+
+    try:
+        item_code = ItemCode(name=data["name"], type=data["type"], code=code_str)
+        db.session.add(item_code)
+        db.session.commit()
+        log = ActionLog(action="Item Code Added", user_id=int(identity), details=f"Item Code {item_code.name} ({item_code.code}) added")
+        db.session.add(log)
+        db.session.commit()
+        return jsonify({"message": "Item code added successfully"}), 201
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error in add_item_code: {str(e)}\n{traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/item_codes/<int:id>", methods=["DELETE"])
+@jwt_required()
+def delete_item_code(id):
+    identity = get_jwt_identity()
+    claims = get_jwt()
+    role = claims.get("role")
+    if role != "Admin":
+        return jsonify({"error": "Permission denied. Admin role required."}), 403
+    item_code = ItemCode.query.get_or_404(id)
+    try:
+        db.session.delete(item_code)
+        db.session.commit()
+        log = ActionLog(action="Item Code Deleted", user_id=int(identity), details=f"Item Code {item_code.name} ({item_code.code}) deleted")
+        db.session.add(log)
+        db.session.commit()
+        return jsonify({"message": "Item code deleted successfully"})
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error in delete_item_code: {str(e)}\n{traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/assign_item", methods=["POST"])
 @jwt_required()
 def assign_item():
     identity = get_jwt_identity()
@@ -554,29 +568,29 @@ def assign_item():
     if role not in ["Admin", "Staff"]:
         return jsonify({"error": "Permission denied"}), 403
     data = request.get_json()
-    if "inmate_id" not in data or "barcode" not in data:
-        return jsonify({"error": "Inmate ID and item barcode are required"}), 400
+    if not data or "inmate_id" not in data or "item_barcode" not in data:
+        return jsonify({"error": "Inmate ID and Item Barcode are required"}), 400
     inmate = Inmate.query.get(data["inmate_id"])
-    item = Item.query.filter_by(barcode=data["barcode"]).first()
+    item = Item.query.filter_by(barcode=data["item_barcode"]).first()
     if not inmate or not item:
-        return jsonify({"error": "Inmate or item not found"}), 404
+        return jsonify({"error": "Inmate or Item not found"}), 404
     if item.status != "In Stock":
         return jsonify({"error": "Item is not in stock"}), 400
     try:
+        inmate_item = InmateItem(inmate_id=inmate.id, item_id=item.id, condition=item.condition)
         item.status = "Assigned"
-        inmate_item = InmateItem(inmate_id=inmate.id, item_id=item.id)
         db.session.add(inmate_item)
         db.session.commit()
-        log = ActionLog(action="Item Assigned", user_id=int(identity), details=f"Item {item.barcode} assigned to inmate {inmate.id}")
+        log = ActionLog(action="Item Assigned", user_id=int(identity), details=f"Item {item.barcode} assigned to Inmate {inmate.id}")
         db.session.add(log)
         db.session.commit()
-        return jsonify({"message": "Item assigned successfully"})
+        return jsonify({"message": "Item assigned successfully"}), 201
     except Exception as e:
         db.session.rollback()
         print(f"Error in assign_item: {str(e)}\n{traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
-@app.route("/release", methods=["POST"])
+@app.route("/release_item", methods=["POST"])
 @jwt_required()
 def release_item():
     identity = get_jwt_identity()
@@ -585,138 +599,132 @@ def release_item():
     if role not in ["Admin", "Staff"]:
         return jsonify({"error": "Permission denied"}), 403
     data = request.get_json()
-    if "inmate_id" not in data or "barcode" not in data or "condition" not in data:
-        return jsonify({"error": "Inmate ID, item barcode, and condition are required"}), 400
-    inmate = Inmate.query.get(data["inmate_id"])
-    item = Item.query.filter_by(barcode=data["barcode"]).first()
-    if not inmate or not item:
-        return jsonify({"error": "Inmate or item not found"}), 404
-    inmate_item = InmateItem.query.filter_by(inmate_id=inmate.id, item_id=item.id, return_status=None).order_by(InmateItem.assigned_date.desc()).first()
-    if not inmate_item:
-        return jsonify({"error": "Item not currently assigned to this inmate or already processed"}), 400
-    try:
-        item.status = "In Stock" # Or another status like "Returned", "Needs Cleaning" etc.
-        item.condition = data["condition"] # Update main item condition upon return
-        inmate_item.return_status = "Returned"
-        inmate_item.condition = data["condition"]
-        
-        # Fee logic based on condition
-        fee_amount = 0
-        fee_name = ""
-        if data["condition"] == "Damaged":
-            fee_amount = item.cost # Example: full cost for damaged
-            fee_name = "Damaged Item Fee"
-        elif data["condition"] == "Altered":
-            fee_amount = item.cost * 0.5 # Example: half cost for altered
-            fee_name = "Altered Item Fee"
-        elif data["condition"] == "Lost": # This might be handled differently, e.g. not via release
-            fee_amount = item.cost
-            fee_name = "Lost Item Fee"
-        
-        if fee_amount > 0:
-            fee = Fee(
-                name=fee_name,
-                amount=fee_amount,
-                inmate_id=inmate.id,
-                item_barcodes=item.barcode,
-                notes=f"Fee for item {item.barcode} returned in {data['condition']} condition."
-            )
-            db.session.add(fee)
-            # inmate.fees_paid += fee_amount # This logic is now handled by total fees owed
+    if not data or "inmate_id" not in data or "item_barcode" not in data or "return_status" not in data:
+        return jsonify({"error": "Inmate ID, Item Barcode, and Return Status are required"}), 400
+    
+    inmate_id = data["inmate_id"]
+    item_barcode = data["item_barcode"]
+    return_status = data["return_status"]
+    condition = data.get("condition", "Used") # Default to Used if not provided
+    notes = data.get("notes", "")
 
+    inmate_item = InmateItem.query.join(Item).filter(InmateItem.inmate_id == inmate_id, Item.barcode == item_barcode, InmateItem.return_status == None).first()
+    if not inmate_item:
+        return jsonify({"error": "Assigned item not found for this inmate or already processed"}), 404
+    
+    item = Item.query.get(inmate_item.item_id)
+    if not item:
+         return jsonify({"error": "Item associated with assignment not found"}), 404 # Should not happen
+
+    try:
+        inmate_item.return_status = return_status
+        inmate_item.condition = condition
+        
+        if return_status == "Returned":
+            item.status = "In Stock"
+            item.condition = condition # Update item's main condition
+        elif return_status == "Damaged" or return_status == "Lost":
+            item.status = return_status # Mark item as Damaged or Lost
+            # Create a fee for damaged or lost item
+            fee_name = f"{return_status} Item - {item.name}"
+            fee_amount = item.cost # Charge full cost for damaged/lost
+            fee = Fee(name=fee_name, amount=fee_amount, inmate_id=inmate_id, item_barcodes=item.barcode, notes=notes)
+            db.session.add(fee)
+        
         db.session.commit()
-        log_details = f"Item {item.barcode} released from inmate {inmate.id}. Condition: {data['condition']}."
-        if fee_amount > 0: log_details += f" Fee of ${fee_amount:.2f} ({fee_name}) applied."
-        log = ActionLog(action="Item Released", user_id=int(identity), details=log_details)
+        log = ActionLog(action="Item Released/Processed", user_id=int(identity), details=f"Item {item.barcode} from Inmate {inmate_id} processed as {return_status}. Condition: {condition}. Notes: {notes}")
         db.session.add(log)
         db.session.commit()
-        return jsonify({"message": "Item released successfully" + (f" and fee of ${fee_amount:.2f} applied." if fee_amount > 0 else "")})
+        return jsonify({"message": f"Item processed as {return_status} successfully"})
     except Exception as e:
         db.session.rollback()
         print(f"Error in release_item: {str(e)}\n{traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
-@app.route("/inmates/<string:inmate_id>/items", methods=["GET"])
+@app.route("/inmate_inventory/<string:inmate_id>", methods=["GET"])
 @jwt_required()
-def get_inmate_items(inmate_id):
+def get_inmate_inventory(inmate_id):
     try:
         inmate = Inmate.query.get_or_404(inmate_id)
-        assigned_items = InmateItem.query.filter_by(inmate_id=inmate.id, return_status=None).all()
-        result = [{
-            "id": ii.item.id,
-            "name": ii.item.name,
-            "barcode": ii.item.barcode,
-            "assigned_date": ii.assigned_date.isoformat()
-        } for ii in assigned_items]
-        return jsonify(result)
+        assigned_items = InmateItem.query.filter_by(inmate_id=inmate_id, return_status=None).all()
+        items_details = []
+        for ai in assigned_items:
+            item = Item.query.get(ai.item_id)
+            if item:
+                items_details.append({
+                    "item_id": item.id,
+                    "name": item.name,
+                    "barcode": item.barcode,
+                    "assigned_date": ai.assigned_date.isoformat(),
+                    "condition": ai.condition
+                })
+        
+        # Calculate total fees owed
+        total_fees_applied = db.session.query(db.func.sum(Fee.amount)).filter(Fee.inmate_id == inmate_id).scalar() or 0.0
+        fees_owed = total_fees_applied
+
+        return jsonify({
+            "inmate_id": inmate.id,
+            "inmate_name": inmate.name,
+            "housing_unit": inmate.housing_unit,
+            "fees_owed": float(fees_owed),
+            "notes": inmate.notes,
+            "assigned_items": items_details
+        })
     except Exception as e:
-        print(f"Error in get_inmate_items: {str(e)}\n{traceback.format_exc()}")
+        print(f"Error in get_inmate_inventory: {str(e)}\n{traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
-@app.route("/reports/inventory", methods=["GET"])
+@app.route("/fees/<string:inmate_id>", methods=["GET"])
 @jwt_required()
-def inventory_report():
+def get_inmate_fees(inmate_id):
     try:
-        items = Item.query.all()
-        report_data = [{
-            "name": item.name,
-            "barcode": item.barcode,
-            "vendor": item.vendor,
-            "cost": item.cost,
-            "status": item.status,
-            "condition": item.condition,
-            "item_group": item.item_group or "Misc."
-        } for item in items]
-        return jsonify(report_data)
-    except Exception as e:
-        print(f"Error in inventory_report: {str(e)}\n{traceback.format_exc()}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/reports/fees", methods=["GET"])
-@jwt_required()
-def fees_report():
-    try:
-        fees = Fee.query.join(Inmate, Fee.inmate_id == Inmate.id).all()
-        report_data = [{
-            "fee_id": fee.id,
-            "fee_name": fee.name,
+        fees = Fee.query.filter_by(inmate_id=inmate_id).all()
+        return jsonify([{
+            "id": fee.id,
+            "name": fee.name,
             "amount": fee.amount,
-            "inmate_id": fee.inmate_id,
-            "inmate_name": fee.inmate.name if fee.inmate else "N/A",
             "item_barcodes": fee.item_barcodes,
             "date_applied": fee.date_applied.isoformat(),
             "notes": fee.notes
-        } for fee in fees]
-        return jsonify(report_data)
+        } for fee in fees])
     except Exception as e:
-        print(f"Error in fees_report: {str(e)}\n{traceback.format_exc()}")
+        print(f"Error in get_inmate_fees: {str(e)}\n{traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
-@app.route("/reports/action_logs", methods=["GET"])
+@app.route("/logs", methods=["GET"])
 @jwt_required()
-def action_logs_report():
+def get_logs():
+    identity = get_jwt_identity()
+    claims = get_jwt()
+    role = claims.get("role")
+    if role != "Admin":
+        return jsonify({"error": "Permission denied. Admin role required."}), 403
     try:
-        logs = ActionLog.query.join(User, ActionLog.user_id == User.id, isouter=True).order_by(ActionLog.timestamp.desc()).all()
-        report_data = [{
-            "log_id": log.id,
-            "action": log.action,
-            "user_id": log.user_id,
-            "username": log.user.username if log.user else "System",
-            "timestamp": log.timestamp.isoformat(),
-            "details": log.details
-        } for log in logs]
-        return jsonify(report_data)
+        logs = ActionLog.query.order_by(ActionLog.timestamp.desc()).limit(100).all()
+        result = []
+        for log_entry in logs:
+            user = User.query.get(log_entry.user_id) if log_entry.user_id else None
+            result.append({
+                "id": log_entry.id,
+                "action": log_entry.action,
+                "user": f"{user.first_name} {user.last_name} ({user.username})" if user else "System",
+                "timestamp": log_entry.timestamp.isoformat(),
+                "details": log_entry.details
+            })
+        return jsonify(result)
     except Exception as e:
-        print(f"Error in action_logs_report: {str(e)}\n{traceback.format_exc()}")
+        print(f"Error in get_logs: {str(e)}\n{traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/users", methods=["GET"])
 @jwt_required()
 def get_users():
+    identity = get_jwt_identity()
     claims = get_jwt()
     role = claims.get("role")
     if role != "Admin":
-        return jsonify({"error": "Permission denied"}), 403
+        return jsonify({"error": "Permission denied. Admin role required."}), 403
     try:
         users = User.query.all()
         return jsonify([{
@@ -733,58 +741,77 @@ def get_users():
 
 @app.route("/users", methods=["POST"])
 @jwt_required()
-def create_user():
+def add_user():
+    identity = get_jwt_identity()
     claims = get_jwt()
     role = claims.get("role")
     if role != "Admin":
-        return jsonify({"error": "Permission denied"}), 403
+        return jsonify({"error": "Permission denied. Admin role required."}), 403
     data = request.get_json()
-    required_fields = ["username", "password", "first_name", "last_name"]
-    if not all(field in data for field in required_fields):
+    if not data or "username" not in data or "password" not in data or "first_name" not in data or "last_name" not in data:
         return jsonify({"error": "Username, password, first name, and last name are required"}), 400
     if User.query.filter_by(username=data["username"]).first():
         return jsonify({"error": "Username already exists"}), 400
     try:
-        new_user = User(
+        user = User(
             username=data["username"],
             role=data.get("role", "Staff"),
             first_name=data["first_name"],
             last_name=data["last_name"],
-            email=data.get("email")
+            email=data.get("email", "")
         )
-        new_user.set_password(data["password"])
-        db.session.add(new_user)
+        user.set_password(data["password"])
+        db.session.add(user)
         db.session.commit()
-        return jsonify({"message": "User created successfully"}), 201
+        log = ActionLog(action="User Added", user_id=int(identity), details=f"User {user.username} added")
+        db.session.add(log)
+        db.session.commit()
+        return jsonify({"message": "User added successfully"}), 201
     except Exception as e:
         db.session.rollback()
-        print(f"Error in create_user: {str(e)}\n{traceback.format_exc()}")
+        print(f"Error in add_user: {str(e)}\n{traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/users/<int:user_id>", methods=["PUT"])
 @jwt_required()
 def update_user(user_id):
+    identity = get_jwt_identity()
     claims = get_jwt()
     role = claims.get("role")
     if role != "Admin":
-        return jsonify({"error": "Permission denied"}), 403
+        return jsonify({"error": "Permission denied. Admin role required."}), 403
+    user_to_update = User.query.get_or_404(user_id)
     data = request.get_json()
-    user = User.query.get_or_404(user_id)
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+    
+    log_details_parts = [f"User {user_to_update.username} updated."]
+
+    if "username" in data and data["username"] != user_to_update.username:
+        if User.query.filter_by(username=data["username"]).first():
+            return jsonify({"error": "New username already exists"}), 400
+        user_to_update.username = data["username"]
+        log_details_parts.append(f"Username: {data['username']}.")
+    if "role" in data:
+        user_to_update.role = data["role"]
+        log_details_parts.append(f"Role: {data['role']}.")
+    if "first_name" in data:
+        user_to_update.first_name = data["first_name"]
+        log_details_parts.append(f"First Name: {data['first_name']}.")
+    if "last_name" in data:
+        user_to_update.last_name = data["last_name"]
+        log_details_parts.append(f"Last Name: {data['last_name']}.")
+    if "email" in data:
+        user_to_update.email = data["email"]
+        log_details_parts.append(f"Email: {data['email']}.")
+    if "password" in data and data["password"]:
+        user_to_update.set_password(data["password"])
+        log_details_parts.append("Password updated.")
+    
     try:
-        if "username" in data and data["username"] != user.username:
-            if User.query.filter_by(username=data["username"]).first():
-                return jsonify({"error": "Username already exists"}), 400
-            user.username = data["username"]
-        if "password" in data and data["password"]:
-            user.set_password(data["password"])
-        if "role" in data:
-            user.role = data["role"]
-        if "first_name" in data:
-            user.first_name = data["first_name"]
-        if "last_name" in data:
-            user.last_name = data["last_name"]
-        if "email" in data:
-            user.email = data["email"]
+        db.session.commit()
+        log = ActionLog(action="User Updated", user_id=int(identity), details=" ".join(log_details_parts))
+        db.session.add(log)
         db.session.commit()
         return jsonify({"message": "User updated successfully"})
     except Exception as e:
@@ -795,13 +822,19 @@ def update_user(user_id):
 @app.route("/users/<int:user_id>", methods=["DELETE"])
 @jwt_required()
 def delete_user(user_id):
+    identity = get_jwt_identity()
     claims = get_jwt()
     role = claims.get("role")
     if role != "Admin":
-        return jsonify({"error": "Permission denied"}), 403
-    user = User.query.get_or_404(user_id)
+        return jsonify({"error": "Permission denied. Admin role required."}), 403
+    user_to_delete = User.query.get_or_404(user_id)
+    if user_to_delete.id == int(identity):
+        return jsonify({"error": "Cannot delete your own account."}), 403
     try:
-        db.session.delete(user)
+        db.session.delete(user_to_delete)
+        db.session.commit()
+        log = ActionLog(action="User Deleted", user_id=int(identity), details=f"User {user_to_delete.username} deleted")
+        db.session.add(log)
         db.session.commit()
         return jsonify({"message": "User deleted successfully"})
     except Exception as e:
@@ -809,15 +842,63 @@ def delete_user(user_id):
         print(f"Error in delete_user: {str(e)}\n{traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
-# Create tables if they don't exist (primarily for local dev, migrations handle prod)
-# This line is usually removed or commented out when using Flask-Migrate for production
-# as migrations will handle schema creation and updates.
-# However, for initial setup or simple dev, it can be useful.
-# For this exercise, we will keep it to ensure local dev works, but migrations are key for Heroku.
+@app.route("/profile", methods=["GET"])
+@jwt_required()
+def get_profile():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify({
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "email": user.email
+    })
+
+@app.route("/profile", methods=["PUT"])
+@jwt_required()
+def update_profile():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+    
+    log_details_parts = [f"User {user.username} updated their profile."]
+
+    if "first_name" in data:
+        user.first_name = data["first_name"]
+        log_details_parts.append(f"First Name: {data['first_name']}.")
+    if "last_name" in data:
+        user.last_name = data["last_name"]
+        log_details_parts.append(f"Last Name: {data['last_name']}.")
+    if "email" in data:
+        user.email = data["email"]
+        log_details_parts.append(f"Email: {data['email']}.")
+    if "password" in data and data["password"]:
+        user.set_password(data["password"])
+        log_details_parts.append("Password updated.")
+    
+    try:
+        db.session.commit()
+        log = ActionLog(action="Profile Updated", user_id=int(user_id), details=" ".join(log_details_parts))
+        db.session.add(log)
+        db.session.commit()
+        return jsonify({"message": "Profile updated successfully"})
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error in update_profile: {str(e)}\n{traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
 with app.app_context():
     db.create_all()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=port, debug=False)
 
