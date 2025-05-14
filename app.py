@@ -773,3 +773,37 @@ if __name__ == "__main__":
         db.create_all() # Creates tables if they don't exist
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5001)))
 
+
+
+@app.route("/inmates/<string:inmate_id>/items", methods=["GET"])
+@jwt_required()
+def get_inmate_assigned_items(inmate_id):
+    try:
+        inmate = Inmate.query.get_or_404(inmate_id)
+        assigned_items = InmateItem.query.filter_by(inmate_id=inmate.id, return_status=None).all()
+        result = []
+        for ai in assigned_items:
+            item = Item.query.get(ai.item_id)
+            if item:
+                result.append({
+                    "id": item.id,
+                    "name": item.name,
+                    "barcode": item.barcode,
+                    "vendor": item.vendor,
+                    "cost": item.cost,
+                    "status": item.status,
+                    "condition": item.condition,
+                    "notes": item.notes,
+                    "item_group": item.item_group,
+                    "assigned_date": ai.assigned_date.isoformat() if ai.assigned_date else None
+                })
+        return jsonify(result)
+    except Exception as e:
+        print(f"Error in get_inmate_assigned_items for inmate {inmate_id}: {str(e)}\n{traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    with app.app_context():
+        db.create_all() # Creates tables if they don't exist
+    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5001)))
+
