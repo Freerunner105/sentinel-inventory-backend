@@ -13,6 +13,9 @@ from io import StringIO
 import re # For item code validation
 import click # Added for custom CLI command
 
+# --- Sentinel Backend App Starting - Version: 20250514-1846 ---
+print("--- Sentinel Backend App Starting - Version: 20250514-1846 ---")
+
 # Flask app setup
 app = Flask(__name__)
 
@@ -34,6 +37,10 @@ bcrypt = Bcrypt(app)
 jwt = JWTManager(app)
 # Global CORS configuration - this should handle OPTIONS for all routes
 CORS(app, resources={r"/*": {"origins": ["http://localhost:3000", "https://sentinel-inventory-frontend-f89591a6b344.herokuapp.com"]}}, supports_credentials=True)
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "healthy", "version": "20250514-1846"}), 200
 
 @jwt.invalid_token_loader
 def invalid_token_callback(error):
@@ -771,18 +778,18 @@ def get_inmate_assigned_items_options(inmate_id):
 @app.route("/inmates/<string:inmate_id>/items", methods=["GET"])
 @jwt_required()
 def get_inmate_assigned_items(inmate_id):
-    print(f"Fetching items for inmate_id: {inmate_id}") # Added for debugging
+    print(f"--- DEBUG v20250514-1846: Fetching items for inmate_id: {inmate_id} ---") # Unique debug line
     try:
         inmate = Inmate.query.get_or_404(inmate_id)
-        print(f"Found inmate: {inmate.name if inmate else 'Not Found'}") # Added for debugging
+        print(f"--- DEBUG v20250514-1846: Found inmate: {inmate.name if inmate else 'Not Found'} ---")
         assigned_items = InmateItem.query.filter_by(inmate_id=inmate.id, return_status=None).all()
-        print(f"Found {len(assigned_items)} assigned items records for inmate {inmate_id}") # Added for debugging
+        print(f"--- DEBUG v20250514-1846: Found {len(assigned_items)} assigned items records for inmate {inmate_id} ---")
         result = []
         for i, ai in enumerate(assigned_items):
-            print(f"Processing assigned item record {i+1}/{len(assigned_items)}, item_id: {ai.item_id}") # Added for debugging
+            print(f"--- DEBUG v20250514-1846: Processing assigned item record {i+1}/{len(assigned_items)}, item_id: {ai.item_id} ---")
             item = Item.query.get(ai.item_id)
             if item:
-                print(f"Found item details for item_id {ai.item_id}: {item.name}") # Added for debugging
+                print(f"--- DEBUG v20250514-1846: Found item details for item_id {ai.item_id}: {item.name} ---")
                 result.append({
                     "id": item.id,
                     "name": item.name,
@@ -796,12 +803,11 @@ def get_inmate_assigned_items(inmate_id):
                     "assigned_date": ai.assigned_date.isoformat() if ai.assigned_date else None
                 })
             else:
-                print(f"WARNING: Item with ID {ai.item_id} not found for inmate {inmate_id}, but InmateItem record exists.") # Added for debugging
-        print(f"Successfully processed items for inmate {inmate_id}. Returning {len(result)} items.") # Added for debugging
+                print(f"--- DEBUG WARNING v20250514-1846: Item with ID {ai.item_id} not found for inmate {inmate_id}, but InmateItem record exists. ---")
+        print(f"--- DEBUG v20250514-1846: Successfully processed items for inmate {inmate_id}. Returning {len(result)} items. ---")
         return jsonify(result)
     except Exception as e:
-        # Enhanced logging for the specific 500 error
-        error_details = f"Error in get_inmate_assigned_items for inmate {inmate_id}: {str(e)}\nFULL TRACEBACK:\n{traceback.format_exc()}"
+        error_details = f"--- ERROR v20250514-1846: Error in get_inmate_assigned_items for inmate {inmate_id}: {str(e)}\nFULL TRACEBACK:\n{traceback.format_exc()} ---"
         print(error_details)
         return jsonify({"error": "An internal server error occurred while fetching inmate items.", "details": str(e)}), 500
 
@@ -833,7 +839,11 @@ def get_inmate_fees(inmate_id):
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    with app.app_context():
-        db.create_all() # Creates tables if they don't exist
+    # The db.create_all() call is usually handled by migrations (flask db upgrade)
+    # and might not be needed here, especially for Heroku deployment.
+    # It's generally better to rely on migrations to manage schema.
+    # Consider removing if migrations are consistently used.
+    # with app.app_context(): 
+    #     db.create_all() 
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5001)))
 
