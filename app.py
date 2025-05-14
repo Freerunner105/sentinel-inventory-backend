@@ -3,44 +3,40 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from flask_bcrypt import Bcrypt
 from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity, get_jwt
-from flask_migrate import Migrate # Import Migrate
+from flask_migrate import Migrate
 import os
 from datetime import datetime
 import random
-import traceback # Ensure traceback is imported
+import traceback
 import csv
 from io import StringIO
-import re # For item code validation
-import click # Added for custom CLI command
+import re
+import click
+from werkzeug.exceptions import NotFound # Import NotFound
 
-# --- Sentinel Backend App Starting - Version: 20250514-1846 ---
-print("--- Sentinel Backend App Starting - Version: 20250514-1846 ---")
+# --- Sentinel Backend App Starting - Version: 20250514-2127 ---
+print("--- Sentinel Backend App Starting - Version: 20250514-2127 ---")
 
-# Flask app setup
 app = Flask(__name__)
 
-# Use DATABASE_URL from environment, with a local Postgres fallback for development
 database_url = os.getenv("DATABASE_URL", "postgresql://postgres:password123@localhost:5432/sentinel_inventory")
 if database_url and database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
 app.config["SQLALCHEMY_DATABASE_URI"] = database_url
-
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6")
 app.config["JWT_HEADER_TYPE"] = "Bearer"
 app.config["JWT_HEADER_NAME"] = "Authorization"
 
 db = SQLAlchemy(app)
-migrate = Migrate(app, db) # Initialize Flask-Migrate
-
+migrate = Migrate(app, db)
 bcrypt = Bcrypt(app)
 jwt = JWTManager(app)
-# Global CORS configuration - this should handle OPTIONS for all routes
 CORS(app, resources={r"/*": {"origins": ["http://localhost:3000", "https://sentinel-inventory-frontend-f89591a6b344.herokuapp.com"]}}, supports_credentials=True)
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    return jsonify({"status": "healthy", "version": "20250514-1846"}), 200
+    return jsonify({"status": "healthy", "version": "20250514-2127"}), 200
 
 @jwt.invalid_token_loader
 def invalid_token_callback(error):
@@ -83,7 +79,7 @@ class Inmate(db.Model):
     id = db.Column(db.String(20), primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     housing_unit = db.Column(db.String(50), default="Unknown")
-    fees_paid = db.Column(db.Float, default=0.0) # This will be re-evaluated for "Fees Owed"
+    fees_paid = db.Column(db.Float, default=0.0)
     notes = db.Column(db.Text)
 
 class InmateItem(db.Model):
@@ -127,10 +123,8 @@ class ItemCode(db.Model):
     type = db.Column(db.String(50), nullable=False)
     code = db.Column(db.String(2), unique=True, nullable=False)
 
-# Custom CLI command for diagnostics
 @app.cli.command("test-cli")
 def test_cli_command():
-    """A simple test command for CLI diagnostics."""
     print("Custom CLI command \"test-cli\" executed successfully!")
 
 def generate_barcode(item_code, size_code):
@@ -231,28 +225,22 @@ def import_inmates_csv():
     role = claims.get("role")
     if role not in ["Admin", "Staff"]:
         return jsonify({"error": "Permission denied"}), 403
-
     if 'file' not in request.files:
         return jsonify({"error": "No file part"}), 400
     file = request.files['file']
     if file.filename == '':
         return jsonify({"error": "No selected file"}), 400
-
     if file and file.filename.endswith('.csv'):
         try:
             csv_file = StringIO(file.read().decode('utf-8'))
             csv_reader = csv.DictReader(csv_file)
             expected_headers = ['last name', 'first name', 'housing unit', 'notes', 'ID']
-            
             reader_fieldnames_normalized = [h.lower().strip() for h in csv_reader.fieldnames] if csv_reader.fieldnames else []
-
             if not all(header.lower() in reader_fieldnames_normalized for header in expected_headers):
                 return jsonify({"error": f"CSV headers do not match expected format. Expected: {', '.join(expected_headers)}. Found: {', '.join(csv_reader.fieldnames or [])}"}), 400
-
             inmates_added = 0
             inmates_skipped = 0
             errors = []
-
             for row_num, row_data in enumerate(csv_reader, start=2):
                 row = {k.lower().strip(): v for k, v in row_data.items()}
                 try:
@@ -261,29 +249,19 @@ def import_inmates_csv():
                     first_name = row.get('first name', '').strip()
                     housing_unit = row.get('housing unit', '').strip() or "Unknown"
                     notes = row.get('notes', '').strip()
-
                     if not inmate_id or not last_name or not first_name:
                         errors.append(f"Row {row_num}: Missing required fields (ID, Last Name, First Name).")
                         continue
-                    
                     full_name = f"{first_name} {last_name}"
-
                     if Inmate.query.get(inmate_id):
                         errors.append(f"Row {row_num}: Inmate ID {inmate_id} already exists. Skipping.")
                         inmates_skipped += 1
                         continue
-                    
-                    new_inmate = Inmate(
-                        id=inmate_id,
-                        name=full_name,
-                        housing_unit=housing_unit,
-                        notes=notes
-                    )
+                    new_inmate = Inmate(id=inmate_id, name=full_name, housing_unit=housing_unit, notes=notes)
                     db.session.add(new_inmate)
                     inmates_added += 1
                 except Exception as row_e:
                     errors.append(f"Row {row_num}: Error processing row - {str(row_e)}")
-            
             if inmates_added > 0:
                 db.session.commit()
                 log = ActionLog(action="Inmates CSV Imported", user_id=int(identity), details=f"{inmates_added} inmates imported. {inmates_skipped} skipped. Errors: {len(errors)}")
@@ -291,14 +269,12 @@ def import_inmates_csv():
                 db.session.commit()
             else:
                 db.session.rollback()
-
             response_message = f"{inmates_added} inmates imported successfully."
             if inmates_skipped > 0:
                 response_message += f" {inmates_skipped} inmates were skipped (already exist)."
             if errors:
                 return jsonify({"message": response_message, "errors": errors}), 207
             return jsonify({"message": response_message}), 201
-
         except Exception as e:
             db.session.rollback()
             print(f"Error in import_inmates_csv: {str(e)}\n{traceback.format_exc()}")
@@ -330,7 +306,6 @@ def update_inmate(id):
         log = ActionLog(action="Inmate Updated", user_id=int(identity), details=log_details.strip())
         db.session.add(log)
         db.session.commit()
-        
         total_fees_applied = db.session.query(db.func.sum(Fee.amount)).filter(Fee.inmate_id == inmate.id).scalar() or 0.0
         fees_owed = total_fees_applied
         return jsonify({
@@ -362,7 +337,7 @@ def get_inventory():
                     Item.barcode.ilike(search_ilike),
                     Item.status.ilike(search_ilike),
                     Item.vendor.ilike(search_ilike),
-                    Item.item_group.ilike(search_ilike) # Added item_group to search
+                    Item.item_group.ilike(search_ilike)
                 )
             )
         items = query.all()
@@ -396,15 +371,11 @@ def add_item():
     required_fields = ["name", "cost", "item_code", "size_code"]
     if not all(field in data for field in required_fields):
         return jsonify({"error": "Missing required fields (name, cost, item_code, size_code)"}), 400
-    
     item_code_val = data["item_code"]
     size_code_val = data["size_code"]
-
     if not re.match(r"^[a-zA-Z0-9]{2}$", item_code_val):
         return jsonify({"error": "Item code must be 2 alphanumeric characters."}), 400
-
     barcode = generate_barcode(item_code_val, size_code_val)
-    
     try:
         item = Item(
             name=data["name"],
@@ -470,7 +441,6 @@ def delete_item(id):
         recycled_barcode = RecycledBarcodes(barcode=item.barcode)
         db.session.add(recycled_barcode)
         db.session.commit()
-
         log = ActionLog(action="Item Deleted (Marked Removed)", user_id=int(identity), details=f"Item {item.name} (ID: {item.id}, Barcode: {item.barcode}) marked as Removed and barcode recycled")
         db.session.add(log)
         db.session.commit()
@@ -491,23 +461,16 @@ def assign_item_to_inmate():
     data = request.get_json()
     if not data or "inmate_id" not in data or "item_barcode" not in data:
         return jsonify({"error": "Inmate ID and Item Barcode are required"}), 400
-    
     inmate = Inmate.query.get(data["inmate_id"])
     item = Item.query.filter_by(barcode=data["item_barcode"]).first()
-
     if not inmate:
         return jsonify({"error": "Inmate not found"}), 404
     if not item:
         return jsonify({"error": "Item not found"}), 404
     if item.status != "In Stock":
         return jsonify({"error": f"Item is not In Stock. Current status: {item.status}"}), 400
-
     try:
-        inmate_item = InmateItem(
-            inmate_id=inmate.id,
-            item_id=item.id,
-            condition=item.condition
-        )
+        inmate_item = InmateItem(inmate_id=inmate.id, item_id=item.id, condition=item.condition)
         item.status = "Assigned"
         db.session.add(inmate_item)
         db.session.commit()
@@ -531,37 +494,26 @@ def return_item_from_inmate():
     data = request.get_json()
     if not data or "item_barcode" not in data or "condition" not in data:
         return jsonify({"error": "Item Barcode and returned Condition are required"}), 400
-
     item = Item.query.filter_by(barcode=data["item_barcode"]).first()
     if not item:
         return jsonify({"error": "Item not found"}), 404
     if item.status != "Assigned":
          return jsonify({"error": f"Item is not currently Assigned. Status: {item.status}"}), 400
-
     inmate_item = InmateItem.query.filter_by(item_id=item.id, return_status=None).order_by(InmateItem.assigned_date.desc()).first()
     if not inmate_item:
         return jsonify({"error": "No active assignment found for this item."}), 404
-
     try:
         inmate_item.return_status = "Returned"
         inmate_item.condition = data["condition"]
         item.status = "In Stock"
         item.condition = data["condition"]
-        
         if data["condition"] == "Damaged" or data["condition"] == "Lost":
             fee_name = f"Damaged/Lost Item - {item.name}"
             fee_amount = item.cost
-            new_fee = Fee(
-                name=fee_name,
-                amount=fee_amount,
-                inmate_id=inmate_item.inmate_id,
-                item_barcodes=item.barcode,
-                notes=f"Item {item.barcode} returned as {data['condition']}."
-            )
+            new_fee = Fee(name=fee_name, amount=fee_amount, inmate_id=inmate_item.inmate_id, item_barcodes=item.barcode, notes=f"Item {item.barcode} returned as {data['condition']}.")
             db.session.add(new_fee)
             log_fee = ActionLog(action="Fee Applied (Return)", user_id=int(identity), details=f"Fee for {fee_name} ({fee_amount}) applied to Inmate {inmate_item.inmate_id} for item {item.barcode}")
             db.session.add(log_fee)
-
         db.session.commit()
         log = ActionLog(action="Item Returned", user_id=int(identity), details=f"Item {item.barcode} returned from Inmate {inmate_item.inmate_id}, condition: {data['condition']}")
         db.session.add(log)
@@ -778,18 +730,22 @@ def get_inmate_assigned_items_options(inmate_id):
 @app.route("/inmates/<string:inmate_id>/items", methods=["GET"])
 @jwt_required()
 def get_inmate_assigned_items(inmate_id):
-    print(f"--- DEBUG v20250514-1846: Fetching items for inmate_id: {inmate_id} ---") # Unique debug line
+    print(f"--- DEBUG v20250514-2127: Fetching items for inmate_id: {inmate_id} ---")
     try:
-        inmate = Inmate.query.get_or_404(inmate_id)
-        print(f"--- DEBUG v20250514-1846: Found inmate: {inmate.name if inmate else 'Not Found'} ---")
+        inmate = Inmate.query.get(inmate_id) # Changed from get_or_404
+        if not inmate:
+            print(f"--- DEBUG v20250514-2127: Inmate with ID {inmate_id} not found. Returning 404. ---")
+            return jsonify({"error": f"Inmate with ID {inmate_id} not found"}), 404
+        
+        print(f"--- DEBUG v20250514-2127: Found inmate: {inmate.name} ---")
         assigned_items = InmateItem.query.filter_by(inmate_id=inmate.id, return_status=None).all()
-        print(f"--- DEBUG v20250514-1846: Found {len(assigned_items)} assigned items records for inmate {inmate_id} ---")
+        print(f"--- DEBUG v20250514-2127: Found {len(assigned_items)} assigned items records for inmate {inmate_id} ---")
         result = []
         for i, ai in enumerate(assigned_items):
-            print(f"--- DEBUG v20250514-1846: Processing assigned item record {i+1}/{len(assigned_items)}, item_id: {ai.item_id} ---")
+            print(f"--- DEBUG v20250514-2127: Processing assigned item record {i+1}/{len(assigned_items)}, item_id: {ai.item_id} ---")
             item = Item.query.get(ai.item_id)
             if item:
-                print(f"--- DEBUG v20250514-1846: Found item details for item_id {ai.item_id}: {item.name} ---")
+                print(f"--- DEBUG v20250514-2127: Found item details for item_id {ai.item_id}: {item.name} ---")
                 result.append({
                     "id": item.id,
                     "name": item.name,
@@ -803,11 +759,15 @@ def get_inmate_assigned_items(inmate_id):
                     "assigned_date": ai.assigned_date.isoformat() if ai.assigned_date else None
                 })
             else:
-                print(f"--- DEBUG WARNING v20250514-1846: Item with ID {ai.item_id} not found for inmate {inmate_id}, but InmateItem record exists. ---")
-        print(f"--- DEBUG v20250514-1846: Successfully processed items for inmate {inmate_id}. Returning {len(result)} items. ---")
+                print(f"--- DEBUG WARNING v20250514-2127: Item with ID {ai.item_id} not found for inmate {inmate_id}, but InmateItem record exists. ---")
+        print(f"--- DEBUG v20250514-2127: Successfully processed items for inmate {inmate_id}. Returning {len(result)} items. ---")
         return jsonify(result)
+    except NotFound as nfe: # Specifically catch NotFound if it still somehow occurs from other places
+        error_details = f"--- ERROR v20250514-2127: NotFound error in get_inmate_assigned_items for inmate {inmate_id}: {str(nfe)}\nFULL TRACEBACK:\n{traceback.format_exc()} ---"
+        print(error_details)
+        return jsonify({"error": f"Resource not found for inmate {inmate_id}. Details: {str(nfe)}"}), 404
     except Exception as e:
-        error_details = f"--- ERROR v20250514-1846: Error in get_inmate_assigned_items for inmate {inmate_id}: {str(e)}\nFULL TRACEBACK:\n{traceback.format_exc()} ---"
+        error_details = f"--- ERROR v20250514-2127: Error in get_inmate_assigned_items for inmate {inmate_id}: {str(e)}\nFULL TRACEBACK:\n{traceback.format_exc()} ---"
         print(error_details)
         return jsonify({"error": "An internal server error occurred while fetching inmate items.", "details": str(e)}), 500
 
@@ -821,7 +781,9 @@ def get_inmate_fees_options(inmate_id):
 @jwt_required()
 def get_inmate_fees(inmate_id):
     try:
-        inmate = Inmate.query.get_or_404(inmate_id)
+        inmate = Inmate.query.get(inmate_id) # Changed from get_or_404
+        if not inmate:
+            return jsonify({"error": f"Inmate with ID {inmate_id} not found"}), 404
         fees = Fee.query.filter_by(inmate_id=inmate.id).all()
         result = []
         for fee in fees:
@@ -839,11 +801,5 @@ def get_inmate_fees(inmate_id):
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    # The db.create_all() call is usually handled by migrations (flask db upgrade)
-    # and might not be needed here, especially for Heroku deployment.
-    # It's generally better to rely on migrations to manage schema.
-    # Consider removing if migrations are consistently used.
-    # with app.app_context(): 
-    #     db.create_all() 
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5001)))
 
