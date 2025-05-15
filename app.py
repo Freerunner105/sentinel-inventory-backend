@@ -15,7 +15,7 @@ import click
 from werkzeug.exceptions import NotFound # Import NotFound
 
 # --- Sentinel Backend App Starting - Version: 20250515-1526 ---
-print("--- Sentinel Backend App Starting - Version: 20250515-1540 ---")
+print("--- Sentinel Backend App Starting - Version: 20250515-1920 ---")
 
 app = Flask(__name__)
 
