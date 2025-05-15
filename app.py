@@ -14,8 +14,8 @@ import re
 import click
 from werkzeug.exceptions import NotFound # Import NotFound
 
-# --- Sentinel Backend App Starting - Version: 20250515-1445 ---
-print("--- Sentinel Backend App Starting - Version: 20250515-1445 ---")
+# --- Sentinel Backend App Starting - Version: 20250515-1500 ---
+print("--- Sentinel Backend App Starting - Version: 20250515-1500 ---")
 
 app = Flask(__name__)
 
@@ -907,9 +907,8 @@ def inmate_items_report():
                 InmateItem.assigned_date,
                 InmateItem.return_status,
                 InmateItem.condition
-            ).
-            join(InmateItem, Inmate.id == InmateItem.inmate_id).
-            join(Item, Item.id == InmateItem.item_id).
+            join(InmateItem, Inmate.id == InmateItem.inmate_id).\
+            join(Item, Item.id == InmateItem.item_id).\
             order_by(Inmate.name, Item.name).all()
         
         report_data = []
