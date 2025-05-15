@@ -15,7 +15,7 @@ import click
 from werkzeug.exceptions import NotFound # Import NotFound
 
 # --- Sentinel Backend App Starting - Version: 20250515-1526 ---
-print("--- Sentinel Backend App Starting - Version: 20250515-1526 ---")
+print("--- Sentinel Backend App Starting - Version: 20250515-1532 ---")
 
 app = Flask(__name__)
 
@@ -939,7 +939,8 @@ def fees_report():
                 Fee.amount,
                 Fee.date_applied,
                 Fee.item_barcodes,
-                Fee.notes            outerjoin(Inmate, Inmate.id == Fee.inmate_id).\
+                Fee.notes
+            ).select_from(Fee).outerjoin(Inmate, Fee.inmate_id == Inmate.id). \
             order_by(Inmate.name, Fee.date_applied.desc()).all()
 
         report_data = []
